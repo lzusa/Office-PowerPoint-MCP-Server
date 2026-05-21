@@ -31,6 +31,113 @@ def add_slide(presentation: Presentation, layout_index: int = 1) -> Tuple:
     return slide, layout
 
 
+def get_slide_elements_minimal(slide, slide_index: int) -> Dict:
+    """
+    Lightweight element reader: returns ONLY element type, text, and position.
+    Designed to minimize context/token consumption when inspecting slides.
+    
+    Args:
+        slide: The slide object
+        slide_index: Index of the slide
+        
+    Returns:
+        Dictionary with slide dimensions and a list of elements.
+        Each element contains: index, name, type, position, text (if any).
+    """
+    from pptx.util import Inches
+
+    slide_width = round(float(slide.part.package.presentation_part.presentation.slide_width) / Inches(1).emu, 2)
+    slide_height = round(float(slide.part.package.presentation_part.presentation.slide_height) / Inches(1).emu, 2)
+
+    # Shape type classification
+    SHAPE_TYPE_MAP = {
+        'AUTO_SHAPE': 'shape',
+        'CALLOUT': 'shape',
+        'CHART': 'chart',
+        'COMMENT': 'comment',
+        'CANVAS': 'group',
+        'DIAGRAM': 'diagram',
+        'EMBEDDED_OLE_OBJECT': 'ole',
+        'FORM': 'form',
+        'FREEFORM': 'shape',
+        'GROUP': 'group',
+        'INK': 'ink',
+        'INK_COMMENT': 'ink_comment',
+        'LINE': 'line',
+        'LINKED_OLE_OBJECT': 'ole',
+        'LINKED_PICTURE': 'image',
+        'MEDIA': 'media',
+        'OLE_CONTROL_OBJECT': 'ole',
+        'PICTURE': 'image',
+        'PLACEHOLDER': 'placeholder',
+        'SCRIPT_ANCHOR': 'script',
+        'SHAPE': 'shape',
+        'TABLE': 'table',
+        'TEXT_BOX': 'textbox',
+        'UNSPECIFIED': 'unknown',
+    }
+
+    elements = []
+    for i, shape in enumerate(slide.shapes):
+        left_in = round(shape.left / Inches(1).emu, 2) if shape.left else 0
+        top_in = round(shape.top / Inches(1).emu, 2) if shape.top else 0
+        width_in = round(shape.width / Inches(1).emu, 2) if shape.width else 0
+        height_in = round(shape.height / Inches(1).emu, 2) if shape.height else 0
+
+        stype = str(shape.shape_type)
+        elem_type = SHAPE_TYPE_MAP.get(stype, 'shape')
+
+        elem = {
+            'index': i,
+            'name': shape.name,
+            'type': elem_type,
+            'left': left_in,
+            'top': top_in,
+            'width': width_in,
+            'height': height_in,
+        }
+
+        if hasattr(shape, 'text_frame') and shape.text_frame:
+            text = shape.text_frame.text.strip()
+            if text:
+                elem['text'] = text if len(text) <= 200 else text[:200] + '...'
+            # Placeholder extra info
+            try:
+                ptype = str(shape.placeholder_format.type)
+                elem['ph_type'] = ptype
+                elem['ph_idx'] = shape.placeholder_format.idx
+            except Exception:
+                pass
+        elif hasattr(shape, 'image'):
+            try:
+                elem['image_info'] = f"{shape.image.content_type}"
+            except Exception:
+                pass
+        elif hasattr(shape, 'table'):
+            table = shape.table
+            rows = len(table.rows)
+            cols = len(table.columns)
+            cells = []
+            for r in range(rows):
+                for c in range(cols):
+                    t = table.cell(r, c).text.strip()
+                    if t:
+                        cells.append({'r': r, 'c': c, 'text': t})
+            elem['table_size'] = f"{rows}x{cols}"
+            if cells:
+                elem['cells'] = cells
+
+        elements.append(elem)
+
+    return {
+        'slide_index': slide_index,
+        'slide_width': slide_width,
+        'slide_height': slide_height,
+        'element_count': len(elements),
+        'elements': elements,
+    }
+
+
 def get_slide_info(slide, slide_index: int) -> Dict:
     """
     Get information about a specific slide.

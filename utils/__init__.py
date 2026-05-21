@@ -26,6 +26,7 @@ __all__ = [
     
     # Content utilities
     "add_slide",
+    "get_slide_elements_minimal",
     "get_slide_info",
     "set_title",
     "populate_placeholder",
