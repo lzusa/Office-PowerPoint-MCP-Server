@@ -234,15 +234,16 @@ The server provides **34 specialized tools** organized into the following catego
 14. **manage_text** - ✨ **Unified text tool** (add/format/validate/format_runs)
 15. **manage_image** - ✨ **Unified image tool** (add/enhance)
 16. **extract_images** - ✨ **NEW** Extract images from PPTX slide(s) and save to disk
+17. **build_document** - ✨ **NEW** Build knowledge-base doc from slide: match labels to images, extract, inject refs inline
 
 ### **Template Operations (7 tools)**
-16. **list_slide_templates** - Browse available slide layout templates
-17. **apply_slide_template** - Apply structured layout templates to existing slides
-18. **create_slide_from_template** - Create new slides using layout templates
-19. **create_presentation_from_templates** - Create complete presentations from template sequences
-20. **get_template_info** - Get detailed information about specific templates
-21. **auto_generate_presentation** - Automatically generate presentations based on topic
-22. **optimize_slide_text** - Optimize text elements for better readability and fit
+18. **list_slide_templates** - Browse available slide layout templates
+19. **apply_slide_template** - Apply structured layout templates to existing slides
+20. **create_slide_from_template** - Create new slides using layout templates
+21. **create_presentation_from_templates** - Create complete presentations from template sequences
+22. **get_template_info** - Get detailed information about specific templates
+23. **auto_generate_presentation** - Automatically generate presentations based on topic
+24. **optimize_slide_text** - Optimize text elements for better readability and fit
 
 ### **Structural Elements (4 tools)**
 23. **add_table** - Create tables with enhanced formatting
@@ -871,6 +872,32 @@ result = use_mcp_tool(
 # Returns summary with total_images, slide_count, and per-slide results
 ```
 
+### Building Knowledge-Base Documents from Slides (v2.2)
+
+One call to get full slide text with inline image references + extracted image files:
+
+```python
+result = use_mcp_tool(
+    server_name="ppt",
+    tool_name="build_document",
+    arguments={
+        "slide_index": 0,
+        "output_dir": "./slide_doc",
+        "naming_prefix": "my_slide"
+    }
+)
+# Returns:
+# {
+#   "slide_index": 0,
+#   "text": "这是标题\n\n(1)[IMAGE: file=my_slide_label_1.png, size=3.5x2.0in, type=image/png] 说明文字...\n\n其他没有图片的段落...",
+#   "images": [
+#     {"label": 1, "file_name": "my_slide_label_1.png", "file_path": "./slide_doc/my_slide_label_1.png",
+#      "content_type": "image/png", "size_bytes": 52480, "width_inches": 3.5, "height_inches": 2.0},
+#   ],
+#   "image_count": 1,
+# }
+```
+
 ## Template Support
 
 ### Working with Templates
@@ -1086,6 +1113,9 @@ Office-PowerPoint-MCP-Server/
 
 ### **New Image Extraction Tool Added (v2.2):**
 - **`extract_images`** - Extract embedded images from PPTX slide(s) and save to disk with metadata (file path, content type, size, dimensions)
+
+### **New Label-Image Matching Tool Added (v2.2):**
+- **`build_document`** - Match numbered ellipse labels (1, 2, ...) to images, extract them, and return full slide text with inline `[IMAGE: ...]` references — ready for knowledge-base use
 
 ### **Key Features of Text Extraction:**
 - **Complete text coverage** - Extracts from titles, placeholders, text boxes, and table cells

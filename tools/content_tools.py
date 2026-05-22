@@ -862,3 +862,60 @@ def register_content_tools(app: FastMCP, presentations: Dict, get_current_presen
             return {
                 "error": f"Failed to extract images: {str(e)}"
             }
+
+    @app.tool(
+        annotations=ToolAnnotations(
+            title="Build Slide Document with Images",
+        ),
+    )
+    def build_document(
+        slide_index: int,
+        output_dir: str = "./slide_document",
+        naming_prefix: Optional[str] = None,
+        presentation_id: Optional[str] = None
+    ) -> Dict:
+        """
+        Build a knowledge-base document from a slide in one call.
+        
+        Returns:
+          - text: full slide text with [IMAGE: file=..., size=..., type=...] injected
+            at each (1), (2), ... marker
+          - images: list of extracted image files with paths and metadata
+        
+        Label shapes (pure digits like 1, 2) are matched to images by proximity,
+        images are extracted to output_dir, and references are injected inline.
+        All text is included, even paragraphs without markers.
+        
+        Args:
+            slide_index: Which slide to process.
+            output_dir: Where to save extracted images.
+            naming_prefix: Prefix for saved image files.
+            presentation_id: Optional presentation ID override.
+        """
+        pres_id = presentation_id if presentation_id is not None else get_current_presentation_id()
+        
+        if pres_id is None or pres_id not in presentations:
+            return {
+                "error": "No presentation is currently loaded or the specified ID is invalid"
+            }
+        
+        pres = presentations[pres_id]
+        
+        if slide_index < 0 or slide_index >= len(pres.slides):
+            return {
+                "error": f"Invalid slide index: {slide_index}. Available slides: 0-{len(pres.slides) - 1}"
+            }
+        
+        slide = pres.slides[slide_index]
+        
+        if naming_prefix is None:
+            naming_prefix = "slide"
+        
+        try:
+            return ppt_utils.build_slide_document(
+                slide, slide_index, output_dir, naming_prefix
+            )
+        except Exception as e:
+            return {
+                "error": f"Failed to build document: {str(e)}"
+            }

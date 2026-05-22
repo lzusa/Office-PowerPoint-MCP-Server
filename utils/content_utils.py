@@ -1263,3 +1263,172 @@ def extract_all_images(pres, output_dir: str, naming_prefix: str = "presentation
         'output_dir': output_dir,
         'slides': results,
     }
+
+
+# ── Label–Image matching & knowledge-base document builder ────────────
+
+def _distance_to_image_topleft(label_shape, image_shape) -> float:
+    """Distance from label shape center to image shape top-left corner."""
+    lx = label_shape.left + label_shape.width / 2
+    ly = label_shape.top + label_shape.height / 2
+    ix = image_shape.left
+    iy = image_shape.top
+    return ((lx - ix) ** 2 + (ly - iy) ** 2) ** 0.5
+
+
+def _is_digit_label(shape) -> str | None:
+    """Check if shape text is a pure digit (1, 2, ...). Returns digit string or None."""
+    if not shape.has_text_frame:
+        return None
+    text = shape.text_frame.text.strip()
+    if text.isdigit():
+        return text
+    return None
+
+
+def match_label_images(slide) -> list[dict]:
+    """
+    Match numbered labels to their nearest images on a slide.
+    Uses label-center → image-top-left distance for accurate pairing.
+    """
+    labels = []
+    images = []
+
+    for shape in slide.shapes:
+        d = _is_digit_label(shape)
+        if d is not None:
+            labels.append((d, shape))
+        elif hasattr(shape, 'image') and shape.image is not None:
+            images.append(shape)
+
+    if not labels or not images:
+        return []
+
+    matched = []
+    used = set()
+
+    for num_text, lbl in labels:
+        best, best_dist = None, float('inf')
+        for img in images:
+            if id(img) in used:
+                continue
+            dist = _distance_to_image_topleft(lbl, img)
+            if dist < best_dist:
+                best_dist = dist
+                best = img
+        if best is not None:
+            used.add(id(best))
+            matched.append({
+                'label': int(num_text),
+                'image_shape': best,
+                'label_shape': lbl,
+            })
+
+    matched.sort(key=lambda x: x['label'])
+    return matched
+
+
+def build_slide_document(
+    slide,
+    slide_index: int,
+    output_dir: str,
+    naming_prefix: str = "slide",
+) -> dict:
+    """
+    Build a knowledge-base document from a slide:
+      1. Extract all text (including paragraphs without markers).
+      2. Match numbered labels (1, 2, ...) to images.
+      3. Extract matched images to output_dir.
+      4. Inject image references inline into text at (1), (2), ... markers.
+
+    Returns:
+        {
+            'slide_index': int,
+            'text': str,              # full text with inline image refs
+            'images': [               # extracted image list
+                {'label': 1, 'file_name': '...', 'file_path': '...', ...},
+            ],
+            'image_count': int,
+        }
+    """
+    import os, re
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Step 1: match labels → images
+    pairs = match_label_images(slide)
+
+    # Step 2: extract images, name by label number
+    ext_map = {
+        'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+        'image/gif': '.gif', 'image/bmp': '.bmp', 'image/tiff': '.tiff',
+        'image/svg+xml': '.svg', 'image/x-emf': '.emf', 'image/x-wmf': '.wmf',
+    }
+    image_map = {}  # label_num -> image info dict
+
+    for pair in pairs:
+        img_shape = pair['image_shape']
+        try:
+            img = img_shape.image
+            content_type = img.content_type
+            ext = ext_map.get(content_type, '.bin')
+            label_num = pair['label']
+
+            file_name = f"{naming_prefix}_label_{label_num}{ext}"
+            file_path = os.path.join(output_dir, file_name)
+
+            with open(file_path, 'wb') as f:
+                f.write(img.blob)
+
+            image_map[label_num] = {
+                'label': label_num,
+                'file_name': file_name,
+                'file_path': file_path,
+                'content_type': content_type,
+                'size_bytes': len(img.blob),
+                'width_inches': round(img_shape.width / 914400, 2) if img_shape.width else None,
+                'height_inches': round(img_shape.height / 914400, 2) if img_shape.height else None,
+            }
+        except Exception as e:
+            image_map[pair['label']] = {'label': pair['label'], 'error': str(e)}
+
+    # Step 3: collect all text and inject image refs
+    lines = []
+
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        text = shape.text_frame.text.strip()
+        if not text:
+            continue
+
+        # Split by paragraphs/lines
+        paragraphs = text.split('\n')
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+
+            # Find (N) markers and inject image info inline
+            def _replace_marker(m):
+                num = int(re.search(r'\d+', m.group()).group())
+                info = image_map.get(num)
+                if info and 'file_path' in info:
+                    return (
+                        f"{m.group()}[IMAGE: file={info['file_name']}, "
+                        f"size={info['width_inches']}x{info['height_inches']}in, "
+                        f"type={info['content_type']}]"
+                    )
+                return m.group()
+
+            injected = re.sub(r'\(\d+\)', _replace_marker, para)
+            lines.append(injected)
+
+    full_text = '\n'.join(lines)
+
+    return {
+        'slide_index': slide_index,
+        'text': full_text,
+        'images': [v for v in image_map.values() if 'file_path' in v],
+        'image_count': len([v for v in image_map.values() if 'file_path' in v]),
+    }
