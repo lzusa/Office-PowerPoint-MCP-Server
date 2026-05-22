@@ -809,3 +809,56 @@ def register_content_tools(app: FastMCP, presentations: Dict, get_current_presen
             return {
                 "error": f"Failed to {operation} image: {str(e)}"
             }
+
+    @app.tool(
+        annotations=ToolAnnotations(
+            title="Extract Images from Slide",
+            readOnlyHint=True,
+        ),
+    )
+    def extract_images(
+        slide_index: Optional[int] = None,
+        output_dir: str = "./extracted_images",
+        naming_prefix: Optional[str] = None,
+        presentation_id: Optional[str] = None
+    ) -> Dict:
+        """
+        Extract images from PPTX slide(s) and save to disk.
+        
+        If slide_index is specified, only that slide is processed.
+        If slide_index is None, images from ALL slides are extracted.
+        
+        Returns list of extracted image files with metadata.
+        """
+        pres_id = presentation_id if presentation_id is not None else get_current_presentation_id()
+        
+        if pres_id is None or pres_id not in presentations:
+            return {
+                "error": "No presentation is currently loaded or the specified ID is invalid"
+            }
+        
+        pres = presentations[pres_id]
+        
+        # Use presentation filename as default naming prefix
+        if naming_prefix is None:
+            naming_prefix = "slide"
+        
+        try:
+            if slide_index is not None:
+                # Extract from single slide
+                if slide_index < 0 or slide_index >= len(pres.slides):
+                    return {
+                        "error": f"Invalid slide index: {slide_index}. Available slides: 0-{len(pres.slides) - 1}"
+                    }
+                slide = pres.slides[slide_index]
+                result = ppt_utils.extract_slide_images(slide, slide_index, output_dir, naming_prefix)
+            else:
+                # Extract from all slides
+                result = ppt_utils.extract_all_images(pres, output_dir, naming_prefix)
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "error": f"Failed to extract images: {str(e)}"
+            }

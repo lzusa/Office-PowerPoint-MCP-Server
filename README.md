@@ -233,6 +233,7 @@ The server provides **34 specialized tools** organized into the following catego
 13. **add_bullet_points** - Add formatted bullet points
 14. **manage_text** - ✨ **Unified text tool** (add/format/validate/format_runs)
 15. **manage_image** - ✨ **Unified image tool** (add/enhance)
+16. **extract_images** - ✨ **NEW** Extract images from PPTX slide(s) and save to disk
 
 ### **Template Operations (7 tools)**
 16. **list_slide_templates** - Browse available slide layout templates
@@ -302,6 +303,17 @@ manage_image(slide_index=0, operation="add", image_source="logo.png",
 manage_image(slide_index=0, operation="enhance", image_source="photo.jpg",
             brightness=1.2, contrast=1.1, saturation=1.3)
 ```
+
+### **`extract_images`** - Extract Images from PPTX
+```python
+# Extract images from a specific slide
+extract_images(slide_index=0, output_dir="./extracted")
+
+# Extract images from ALL slides in the presentation
+extract_images(output_dir="./all_images", naming_prefix="my_ppt")
+```
+
+Returns a list of extracted files with metadata (file path, content type, size, etc.).
 
 ### **`apply_picture_effects`** - Multiple Effects in One Call
 ```python
@@ -823,6 +835,42 @@ result = use_mcp_tool(
 )
 ```
 
+### Extracting Images from PPTX (v2.2)
+
+```python
+# Extract images from a specific slide
+result = use_mcp_tool(
+    server_name="ppt",
+    tool_name="extract_images",
+    arguments={
+        "slide_index": 0,
+        "output_dir": "./slide_images"
+    }
+)
+# Returns:
+# {
+#   "slide_index": 0,
+#   "image_count": 3,
+#   "images": [
+#     {"file_name": "slide_0_image_0.png", "file_path": "./slide_images/slide_0_image_0.png",
+#      "content_type": "image/png", "size_bytes": 52480, "shape_name": "Picture 1",
+#      "width_inches": 3.5, "height_inches": 2.0},
+#     ...
+#   ]
+# }
+
+# Extract images from ALL slides in the presentation
+result = use_mcp_tool(
+    server_name="ppt",
+    tool_name="extract_images",
+    arguments={
+        "output_dir": "./all_images",
+        "naming_prefix": "my_deck"
+    }
+)
+# Returns summary with total_images, slide_count, and per-slide results
+```
+
 ## Template Support
 
 ### Working with Templates
@@ -1035,6 +1083,9 @@ Office-PowerPoint-MCP-Server/
 ### **New Text Extraction Tools Added:**
 - **`extract_slide_text`** - Extract all text content from a specific slide including titles, placeholders, text shapes, and tables
 - **`extract_presentation_text`** - Extract text content from all slides in a presentation with comprehensive statistics and combined output
+
+### **New Image Extraction Tool Added (v2.2):**
+- **`extract_images`** - Extract embedded images from PPTX slide(s) and save to disk with metadata (file path, content type, size, dimensions)
 
 ### **Key Features of Text Extraction:**
 - **Complete text coverage** - Extracts from titles, placeholders, text boxes, and table cells

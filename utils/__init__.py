@@ -36,6 +36,8 @@ __all__ = [
     "format_text_advanced",
     "add_image",
     "add_table",
+    "extract_slide_images",
+    "extract_all_images",
     "format_table_cell",
     "edit_cell_text",
     "add_table_row",

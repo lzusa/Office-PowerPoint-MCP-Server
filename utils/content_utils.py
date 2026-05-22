@@ -1159,3 +1159,107 @@ def delete_table_column(table, col_index: int) -> None:
             tr.remove(tcs[col_index])
 
     table.notify_width_changed()
+
+
+def extract_slide_images(slide, slide_index: int, output_dir: str, naming_prefix: str = "slide") -> Dict:
+    """
+    Extract all images (pictures) from a slide and save them to disk.
+    
+    Image index matches get_slide_elements element index for easy cross-reference.
+
+    Args:
+        slide: The slide object
+        slide_index: Index of the slide (used for naming)
+        output_dir: Directory to save extracted images
+        naming_prefix: Prefix for extracted image files (e.g. "slide" -> "slide_0_image_3.png")
+
+    Returns:
+        Dictionary with list of extracted image info or error.
+    """
+    import os
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    images = []
+
+    for i, shape in enumerate(slide.shapes):
+        # Only picture shapes have embedded images
+        if not hasattr(shape, 'image') or shape.image is None:
+            continue
+
+        try:
+            img = shape.image
+            content_type = img.content_type  # e.g. 'image/png', 'image/jpeg'
+
+            # Determine file extension from content_type
+            ext_map = {
+                'image/png': '.png',
+                'image/jpeg': '.jpg',
+                'image/jpg': '.jpg',
+                'image/gif': '.gif',
+                'image/bmp': '.bmp',
+                'image/tiff': '.tiff',
+                'image/svg+xml': '.svg',
+                'image/x-emf': '.emf',
+                'image/x-wmf': '.wmf',
+            }
+            ext = ext_map.get(content_type, '.bin')
+
+            # Use shape index (i) to match get_slide_elements element index
+            file_name = f"{naming_prefix}_{slide_index}_image_{i}{ext}"
+            file_path = os.path.join(output_dir, file_name)
+
+            # Write image bytes
+            with open(file_path, 'wb') as f:
+                f.write(img.blob)
+
+            images.append({
+                'index': i,  # matches get_slide_elements element index
+                'file_name': file_name,
+                'file_path': file_path,
+                'content_type': content_type,
+                'size_bytes': len(img.blob),
+                'shape_name': shape.name if hasattr(shape, 'name') else 'Unknown',
+                'width_inches': round(shape.width / 914400, 2) if shape.width else None,
+                'height_inches': round(shape.height / 914400, 2) if shape.height else None,
+            })
+        except Exception as e:
+            images.append({
+                'index': i,
+                'error': str(e),
+                'shape_name': shape.name if hasattr(shape, 'name') else 'Unknown',
+            })
+
+    return {
+        'slide_index': slide_index,
+        'image_count': len(images),
+        'images': images,
+    }
+
+
+def extract_all_images(pres, output_dir: str, naming_prefix: str = "presentation") -> Dict:
+    """
+    Extract all images from every slide in a presentation.
+
+    Args:
+        pres: The Presentation object
+        output_dir: Directory to save extracted images
+        naming_prefix: Prefix for extracted image files
+
+    Returns:
+        Dictionary with summary and list of extracted images per slide.
+    """
+    results = []
+    total_count = 0
+
+    for idx, slide in enumerate(pres.slides):
+        result = extract_slide_images(slide, idx, output_dir, naming_prefix)
+        results.append(result)
+        total_count += result.get('image_count', 0)
+
+    return {
+        'total_images': total_count,
+        'slide_count': len(pres.slides),
+        'output_dir': output_dir,
+        'slides': results,
+    }
