@@ -1326,7 +1326,16 @@ def _is_potential_footnote(text_shape, img_shape) -> bool:
 def _group_images_by_labels(slide, all_shapes=None):
     """
     Group images by their nearest label number.
-    Handles: one label → multiple images, unlabeled images, footnotes.
+
+    Two-phase strategy:
+    1. **Phase One — labeled assignment**: each label claims its single
+       nearest image (one-to-one, strict matching).
+    2. **Phase Two — unlabeled inheritance**: every remaining unassigned
+       image inherits the label of the closest already-grouped image
+       (always inherits, no threshold guard — every image is returned).
+       If the slide has *no* labels at all, all images are placed in
+       a single unlabeled group (key `0`).
+
     Returns dict: {label_num: {'images': [...], 'footnotes': {img_id: footnote_text}}}
     """
     if all_shapes is None:
@@ -1349,51 +1358,71 @@ def _group_images_by_labels(slide, all_shapes=None):
         return {}
 
     labels.sort(key=lambda x: x[0])
+    has_labels = len(labels) > 0
 
-    groups = {}
-    used_images = set()
+    groups = {}           # label_num -> {'images': [...], 'footnotes': {}}
+    image_labels = {}     # id(img) -> label_num  (tracks every image's label)
 
-    for label_num, lbl in labels:
-        candidates = [(img, _rect_distance(lbl, img)) for img in images if id(img) not in used_images]
-        if not candidates:
-            break
+    # ── Phase 1: assign each label its single nearest image ──
+    if has_labels:
+        used_images = set()
 
-        # Sort by distance, use threshold to avoid wrong matches
-        candidates.sort(key=lambda x: x[1])
-        threshold = max(img.width for img in images) * 1.5 if images else float('inf')
+        for label_num, lbl in labels:
+            groups[label_num] = {'images': [], 'footnotes': {}}
 
-        group_images = []
-        for img, dist in candidates:
-            if dist > threshold:
-                break
-            group_images.append(img)
-            used_images.add(id(img))
+            # Build candidate list from unassigned images
+            candidates = [
+                (img, _rect_distance(lbl, img))
+                for img in images
+                if id(img) not in used_images
+            ]
+            if not candidates:
+                continue                      # ← was `break` (fatal)
 
-        if group_images:
-            groups[label_num] = {'images': group_images, 'footnotes': {}}
+            candidates.sort(key=lambda x: x[1])
 
-    # Assign unlabeled images to nearest group
-    for img in images:
-        if id(img) in used_images:
-            continue
-        if not groups:
-            groups[0] = {'images': [], 'footnotes': {}}
+            # Claim the closest image
+            closest_img, closest_dist = candidates[0]
+            groups[label_num]['images'].append(closest_img)
+            used_images.add(id(closest_img))
+            image_labels[id(closest_img)] = label_num
 
-        best_label = None
-        best_dist = float('inf')
-        for label_num, group in groups.items():
-            for gimg in group['images']:
-                d = _rect_distance(img, gimg)
-                if d < best_dist:
-                    best_dist = d
-                    best_label = label_num
+    # ── Phase 2: unlabeled image inheritance ──
+    unassigned = [img for img in images if id(img) not in image_labels]
 
-        if best_label is not None:
-            groups[best_label]['images'].append(img)
+    if unassigned:
+        if has_labels:
+            # For each unassigned image, find the closest already-grouped
+            # image and inherit its label.  Always inherit (no threshold
+            # guard) so that every image is returned, even if the slide
+            # layout is unusual.
+            for img in unassigned:
+                best_label = None
+                best_dist = float('inf')
+                best_gimg = None
+                for label_num, group in groups.items():
+                    for gimg in group['images']:
+                        d = _rect_distance(img, gimg)
+                        if d < best_dist:
+                            best_dist = d
+                            best_label = label_num
+                            best_gimg = gimg
+
+                if best_label is not None:
+                    groups[best_label]['images'].append(img)
+                    image_labels[id(img)] = best_label
+                else:
+                    # Should not happen if groups is non-empty, but fallback
+                    first_label = next(iter(groups))
+                    groups[first_label]['images'].append(img)
+                    image_labels[id(img)] = first_label
         else:
-            groups.setdefault(0, {'images': [], 'footnotes': {}})['images'].append(img)
+            # No labels at all: all images go into one unlabeled group
+            groups[0] = {'images': list(images), 'footnotes': {}}
+            for img in images:
+                image_labels[id(img)] = 0
 
-    # Find footnotes for each image
+    # ── Phase 3: footnote detection (unchanged) ──
     for label_num, group in groups.items():
         for img in group['images']:
             best_fn = None
