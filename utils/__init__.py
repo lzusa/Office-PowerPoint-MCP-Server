@@ -38,7 +38,6 @@ __all__ = [
     "add_table",
     "extract_slide_images",
     "extract_all_images",
-    "match_label_images",
     "build_slide_document",
     "format_table_cell",
     "edit_cell_text",

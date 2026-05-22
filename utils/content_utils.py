@@ -1267,13 +1267,24 @@ def extract_all_images(pres, output_dir: str, naming_prefix: str = "presentation
 
 # ── Label–Image matching & knowledge-base document builder ────────────
 
-def _distance_to_image_topleft(label_shape, image_shape) -> float:
-    """Distance from label shape center to image shape top-left corner."""
-    lx = label_shape.left + label_shape.width / 2
-    ly = label_shape.top + label_shape.height / 2
-    ix = image_shape.left
-    iy = image_shape.top
-    return ((lx - ix) ** 2 + (ly - iy) ** 2) ** 0.5
+def _rect_distance(s1, s2) -> float:
+    """
+    Euclidean distance between two rectangular shapes (bounding boxes).
+    Returns 0 when shapes overlap.
+    All positions/sizes are in Emu (python-pptx native unit).
+    """
+    x1 = s1.left
+    y1 = s1.top
+    w1 = s1.width
+    h1 = s1.height
+    x2 = s2.left
+    y2 = s2.top
+    w2 = s2.width
+    h2 = s2.height
+
+    dx = max(0, max(x1, x2) - min(x1 + w1, x2 + w2))
+    dy = max(0, max(y1, y2) - min(y1 + h1, y2 + h2))
+    return (dx ** 2 + dy ** 2) ** 0.5
 
 
 def _is_digit_label(shape) -> str | None:
@@ -1286,46 +1297,143 @@ def _is_digit_label(shape) -> str | None:
     return None
 
 
-def match_label_images(slide) -> list[dict]:
+def _is_potential_footnote(text_shape, img_shape) -> bool:
+    """Check if text_shape is a small text box below img_shape (potential footnote/caption)."""
+    if text_shape.width >= img_shape.width:
+        return False
+    if text_shape.height >= img_shape.height * 0.5:
+        return False
+
+    iy2 = img_shape.top + img_shape.height
+    if text_shape.top < iy2:
+        return False
+
+    gap = text_shape.top - iy2
+    if gap > img_shape.height * 2:
+        return False
+
+    tx1 = text_shape.left
+    tx2 = text_shape.left + text_shape.width
+    ix1 = img_shape.left
+    ix2 = img_shape.left + img_shape.width
+
+    if not (tx1 < ix2 and tx2 > ix1):
+        return False
+
+    return True
+
+
+def _group_images_by_labels(slide, all_shapes=None):
     """
-    Match numbered labels to their nearest images on a slide.
-    Uses label-center → image-top-left distance for accurate pairing.
+    Group images by their nearest label number.
+    Handles: one label → multiple images, unlabeled images, footnotes.
+    Returns dict: {label_num: {'images': [...], 'footnotes': {img_id: footnote_text}}}
     """
+    if all_shapes is None:
+        all_shapes = list(slide.shapes)
+
     labels = []
     images = []
+    text_shapes = []
 
-    for shape in slide.shapes:
+    for shape in all_shapes:
         d = _is_digit_label(shape)
         if d is not None:
-            labels.append((d, shape))
+            labels.append((int(d), shape))
         elif hasattr(shape, 'image') and shape.image is not None:
             images.append(shape)
+        elif shape.has_text_frame and shape.text_frame.text.strip():
+            text_shapes.append(shape)
 
-    if not labels or not images:
-        return []
+    if not images:
+        return {}
 
-    matched = []
-    used = set()
+    labels.sort(key=lambda x: x[0])
 
-    for num_text, lbl in labels:
-        best, best_dist = None, float('inf')
-        for img in images:
-            if id(img) in used:
-                continue
-            dist = _distance_to_image_topleft(lbl, img)
-            if dist < best_dist:
-                best_dist = dist
-                best = img
-        if best is not None:
-            used.add(id(best))
-            matched.append({
-                'label': int(num_text),
-                'image_shape': best,
-                'label_shape': lbl,
-            })
+    groups = {}
+    used_images = set()
 
-    matched.sort(key=lambda x: x['label'])
-    return matched
+    for label_num, lbl in labels:
+        candidates = [(img, _rect_distance(lbl, img)) for img in images if id(img) not in used_images]
+        if not candidates:
+            break
+
+        # Sort by distance, use threshold to avoid wrong matches
+        candidates.sort(key=lambda x: x[1])
+        threshold = max(img.width for img in images) * 1.5 if images else float('inf')
+
+        group_images = []
+        for img, dist in candidates:
+            if dist > threshold:
+                break
+            group_images.append(img)
+            used_images.add(id(img))
+
+        if group_images:
+            groups[label_num] = {'images': group_images, 'footnotes': {}}
+
+    # Assign unlabeled images to nearest group
+    for img in images:
+        if id(img) in used_images:
+            continue
+        if not groups:
+            groups[0] = {'images': [], 'footnotes': {}}
+
+        best_label = None
+        best_dist = float('inf')
+        for label_num, group in groups.items():
+            for gimg in group['images']:
+                d = _rect_distance(img, gimg)
+                if d < best_dist:
+                    best_dist = d
+                    best_label = label_num
+
+        if best_label is not None:
+            groups[best_label]['images'].append(img)
+        else:
+            groups.setdefault(0, {'images': [], 'footnotes': {}})['images'].append(img)
+
+    # Find footnotes for each image
+    for label_num, group in groups.items():
+        for img in group['images']:
+            best_fn = None
+            best_dist = float('inf')
+            for ts in text_shapes:
+                if _is_potential_footnote(ts, img):
+                    d = _rect_distance(ts, img)
+                    if d < best_dist:
+                        best_dist = d
+                        best_fn = ts
+            if best_fn is not None:
+                group['footnotes'][id(img)] = best_fn.text_frame.text.strip()
+
+    return groups
+
+
+def _extract_image_info(img_shape, footnote_text=None, label_num=None) -> dict:
+    """Extract image metadata consistent with extract_images output format."""
+    try:
+        img = img_shape.image
+        content_type = img.content_type
+        ext_map = {
+            'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+            'image/gif': '.gif', 'image/bmp': '.bmp', 'image/tiff': '.tiff',
+            'image/svg+xml': '.svg', 'image/x-emf': '.emf', 'image/x-wmf': '.wmf',
+        }
+        ext = ext_map.get(content_type, '.bin')
+        info = {
+            'content_type': content_type,
+            'size_bytes': len(img.blob),
+            'width_inches': round(img_shape.width / 914400, 2) if img_shape.width else None,
+            'height_inches': round(img_shape.height / 914400, 2) if img_shape.height else None,
+        }
+        if label_num is not None:
+            info['label'] = label_num
+        if footnote_text:
+            info['footnote'] = footnote_text
+        return info
+    except Exception as e:
+        return {'error': str(e)}
 
 
 def build_slide_document(
@@ -1336,99 +1444,184 @@ def build_slide_document(
 ) -> dict:
     """
     Build a knowledge-base document from a slide:
-      1. Extract all text (including paragraphs without markers).
-      2. Match numbered labels (1, 2, ...) to images.
-      3. Extract matched images to output_dir.
-      4. Inject image references inline into text at (1), (2), ... markers.
+      1. Detect footnotes (small text boxes below images).
+      2. Group images by label number (handles one label -> multiple images).
+      3. Assign unlabeled images to nearest labeled image's group (rect-to-rect distance).
+      4. If no labels at all, append all images at the end of text.
+      5. Extract images to output_dir.
+      6. Inject image references inline into text at (1), (2), ... markers.
 
     Returns:
         {
             'slide_index': int,
             'text': str,              # full text with inline image refs
             'images': [               # extracted image list
-                {'label': 1, 'file_name': '...', 'file_path': '...', ...},
+                {'label': 1, 'file_name': '...', 'file_path': '...', 'footnote': '...'},
             ],
             'image_count': int,
+            'groups': [               # label grouping info
+                {'label': 1, 'image_count': 2, 'has_footnote': True},
+            ],
+            'has_labels': bool,       # whether any labels were found
         }
     """
     import os, re
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Step 1: match labels → images
-    pairs = match_label_images(slide)
-
-    # Step 2: extract images, name by label number
     ext_map = {
         'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
         'image/gif': '.gif', 'image/bmp': '.bmp', 'image/tiff': '.tiff',
         'image/svg+xml': '.svg', 'image/x-emf': '.emf', 'image/x-wmf': '.wmf',
     }
-    image_map = {}  # label_num -> image info dict
 
-    for pair in pairs:
-        img_shape = pair['image_shape']
-        try:
-            img = img_shape.image
-            content_type = img.content_type
-            ext = ext_map.get(content_type, '.bin')
-            label_num = pair['label']
+    # Step 1: group images by labels
+    groups = _group_images_by_labels(slide)
 
-            file_name = f"{naming_prefix}_label_{label_num}{ext}"
-            file_path = os.path.join(output_dir, file_name)
+    # Check if there are any real labels (not just label=0 for unlabeled)
+    has_labels = any(k != 0 for k in groups.keys())
 
-            with open(file_path, 'wb') as f:
-                f.write(img.blob)
+    # Collect footnote shape ids to skip them in text collection
+    footnote_shape_ids = set()
+    for group in groups.values():
+        for img_id, fn_shape in group.get('footnotes', {}).items():
+            if fn_shape is not None:
+                footnote_shape_ids.add(id(fn_shape))
 
-            image_map[label_num] = {
-                'label': label_num,
-                'file_name': file_name,
-                'file_path': file_path,
-                'content_type': content_type,
-                'size_bytes': len(img.blob),
-                'width_inches': round(img_shape.width / 914400, 2) if img_shape.width else None,
-                'height_inches': round(img_shape.height / 914400, 2) if img_shape.height else None,
-            }
-        except Exception as e:
-            image_map[pair['label']] = {'label': pair['label'], 'error': str(e)}
+    # Step 2: extract images
+    all_images = []  # list of (label_num, img_shape, file_path, info)
+    label_to_images = {}  # label_num -> list of image info dicts
 
-    # Step 3: collect all text and inject image refs
+    image_counter = 0
+    for label_num in sorted(groups.keys()):
+        group = groups[label_num]
+        label_to_images[label_num] = []
+        for img_shape in group['images']:
+            try:
+                img = img_shape.image
+                content_type = img.content_type
+                ext = ext_map.get(content_type, '.bin')
+
+                if has_labels and label_num != 0:
+                    file_name = f"{naming_prefix}_label_{label_num}_{image_counter}{ext}"
+                else:
+                    file_name = f"{naming_prefix}_image_{image_counter}{ext}"
+
+                file_path = os.path.join(output_dir, file_name)
+                with open(file_path, 'wb') as f:
+                    f.write(img.blob)
+
+                footnote_text = None
+                fn_shape = group['footnotes'].get(id(img_shape))
+                if fn_shape is not None:
+                    footnote_text = fn_shape.text_frame.text.strip()
+
+                info = {
+                    'label': label_num if has_labels and label_num != 0 else None,
+                    'file_name': file_name,
+                    'file_path': file_path,
+                    'content_type': content_type,
+                    'size_bytes': len(img.blob),
+                    'width_inches': round(img_shape.width / 914400, 2) if img_shape.width else None,
+                    'height_inches': round(img_shape.height / 914400, 2) if img_shape.height else None,
+                }
+                if footnote_text:
+                    info['footnote'] = footnote_text
+
+                all_images.append((label_num, img_shape, file_path, info))
+                label_to_images[label_num].append(info)
+                image_counter += 1
+            except Exception as e:
+                err_info = {'label': label_num if has_labels else None, 'error': str(e)}
+                label_to_images[label_num].append(err_info)
+                all_images.append((label_num, img_shape, None, err_info))
+
+    # Step 3: collect text and inject image refs
     lines = []
+    marker_pattern = re.compile(r'\((\d+)\)')
+    has_markers = False
 
+    # First pass: check if text contains any markers
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
         text = shape.text_frame.text.strip()
+        if text and marker_pattern.search(text):
+            has_markers = True
+            break
+
+    # Second pass: build text lines
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+
+        # Skip footnote text boxes (already attached to images)
+        if id(shape) in footnote_shape_ids:
+            continue
+
+        text = shape.text_frame.text.strip()
         if not text:
             continue
 
-        # Split by paragraphs/lines
         paragraphs = text.split('\n')
         for para in paragraphs:
             para = para.strip()
             if not para:
                 continue
 
-            # Find (N) markers and inject image info inline
-            def _replace_marker(m):
-                num = int(re.search(r'\d+', m.group()).group())
-                info = image_map.get(num)
-                if info and 'file_path' in info:
-                    return (
-                        f"{m.group()}[IMAGE: file={info['file_name']}, "
-                        f"size={info['width_inches']}x{info['height_inches']}in, "
-                        f"type={info['content_type']}]"
-                    )
-                return m.group()
+            if has_markers:
+                # Inject image refs at marker positions
+                def _replace_marker(m, _label_to_images=label_to_images):
+                    num = int(m.group(1))
+                    imgs = _label_to_images.get(num)
+                    if imgs:
+                        refs = []
+                        for img_info in imgs:
+                            if 'error' in img_info:
+                                continue
+                            ref = f"[IMAGE: file={img_info['file_name']}, size={img_info['width_inches']}x{img_info['height_inches']}in, type={img_info['content_type']}]"
+                            if img_info.get('footnote'):
+                                ref += f" | footnote: {img_info['footnote']}"
+                            refs.append(ref)
+                        return f"{m.group()}{' '.join(refs)}"
+                    return m.group()
 
-            injected = re.sub(r'\(\d+\)', _replace_marker, para)
-            lines.append(injected)
+                injected = marker_pattern.sub(_replace_marker, para)
+                lines.append(injected)
+            else:
+                lines.append(para)
 
     full_text = '\n'.join(lines)
+
+    # If no markers, append all images at the end
+    if not has_markers and all_images:
+        full_text += '\n\n--- 图片 ---\n'
+        for label_num, img_shape, file_path, info in all_images:
+            if 'error' in info:
+                continue
+            label_str = f"(标号{info['label']})" if info.get('label') is not None else "(无标号)"
+            line = f"[IMAGE: file={info['file_name']}, size={info['width_inches']}x{info['height_inches']}in, type={info['content_type']}] {label_str}"
+            if info.get('footnote'):
+                line += f" | 脚注: {info['footnote']}"
+            full_text += line + '\n'
+
+    # Build groups summary
+    groups_summary = []
+    for label_num in sorted(groups.keys()):
+        group = groups[label_num]
+        has_footnote = any(fn is not None for fn in group['footnotes'].values())
+        groups_summary.append({
+            'label': label_num if has_labels and label_num != 0 else None,
+            'image_count': len(group['images']),
+            'has_footnote': has_footnote,
+        })
 
     return {
         'slide_index': slide_index,
         'text': full_text,
-        'images': [v for v in image_map.values() if 'file_path' in v],
-        'image_count': len([v for v in image_map.values() if 'file_path' in v]),
+        'images': [info for _, _, _, info in all_images if 'error' not in info],
+        'image_count': len([info for _, _, _, info in all_images if 'error' not in info]),
+        'groups': groups_summary,
+        'has_labels': has_labels,
     }
+

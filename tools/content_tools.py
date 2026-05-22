@@ -877,14 +877,18 @@ def register_content_tools(app: FastMCP, presentations: Dict, get_current_presen
         """
         Build a knowledge-base document from a slide in one call.
         
-        Returns:
-          - text: full slide text with [IMAGE: file=..., size=..., type=...] injected
-            at each (1), (2), ... marker
-          - images: list of extracted image files with paths and metadata
+        Features:
+          - Detects footnotes (small text boxes below images) and attaches them to image info.
+          - Groups images by label number (handles one label -> multiple images).
+          - Assigns unlabeled images to nearest labeled image's group (rect-to-rect distance).
+          - If no labels exist at all, appends all images at the end of text.
+          - Injects [IMAGE: ...] refs inline at (1), (2), ... markers in text.
         
-        Label shapes (pure digits like 1, 2) are matched to images by proximity,
-        images are extracted to output_dir, and references are injected inline.
-        All text is included, even paragraphs without markers.
+        Returns:
+          - text: full slide text with inline image refs (or appended at end if no markers)
+          - images: list of extracted image files with paths, metadata, and footnotes
+          - groups: label grouping summary
+          - has_labels: whether any labels were found on the slide
         
         Args:
             slide_index: Which slide to process.
