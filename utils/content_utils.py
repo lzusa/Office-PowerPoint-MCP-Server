@@ -1591,12 +1591,27 @@ def build_slide_document(
     # Check if there are any real labels (not just label=0 for unlabeled)
     has_labels = any(k != 0 for k in groups.keys())
 
+    # DEBUG: Log groups structure
+    if debug_log is not None:
+        debug_log.append("")
+        debug_log.append("="*80)
+        debug_log.append("build_slide_document — Image Extraction")
+        debug_log.append("="*80)
+        debug_log.append(f"  has_labels={has_labels}")
+        debug_log.append(f"  groups keys: {list(groups.keys())}")
+        for lbl, grp in groups.items():
+            debug_log.append(f"    Group {lbl}: {len(grp['images'])} images, {len(grp['footnotes'])} footnotes")
+            for img in grp['images']:
+                debug_log.append(f"      img id={id(img)} pos=({img.left},{img.top})")
+            for img_id, fn_txt in grp['footnotes'].items():
+                debug_log.append(f"      footnote img_id={img_id}: {repr(fn_txt[:30] if fn_txt else None)}")
+
     # Collect footnote shape ids to skip them in text collection
-    footnote_shape_ids = set()
-    for group in groups.values():
-        for img_id, fn_shape in group.get('footnotes', {}).items():
-            if fn_shape is not None:
-                footnote_shape_ids.add(id(fn_shape))
+    # NOTE: group['footnotes'] stores {img_id: footnote_text_string}, not shape objects!
+    footnote_shape_ids = set()  # This is actually not used for shape skipping since we don't have shape refs
+    # The footnotes dict keys are img_ids (int), values are footnote text strings
+    # We don't skip text shapes here because we don't track which text shape is a footnote
+    # Instead, we rely on the text content matching to skip footnotes in text extraction
 
     # Step 2: extract images
     all_images = []  # list of (label_num, img_shape, file_path, info)
@@ -1607,6 +1622,7 @@ def build_slide_document(
         group = groups[label_num]
         label_to_images[label_num] = []
         for img_shape in group['images']:
+            img_id = id(img_shape)
             try:
                 img = img_shape.image
                 content_type = img.content_type
@@ -1621,10 +1637,11 @@ def build_slide_document(
                 with open(file_path, 'wb') as f:
                     f.write(img.blob)
 
-                footnote_text = None
-                fn_shape = group['footnotes'].get(id(img_shape))
-                if fn_shape is not None:
-                    footnote_text = fn_shape.text_frame.text.strip()
+                # FIX: group['footnotes'] stores {img_id: footnote_text_string}, not shape objects!
+                footnote_text = group['footnotes'].get(img_id)
+                if debug_log is not None:
+                    debug_log.append(f"  Extracting label={label_num}, img_id={img_id}, file={file_name}")
+                    debug_log.append(f"    footnote_text from group['footnotes'].get({img_id}): {repr(footnote_text)}")
 
                 info = {
                     'label': label_num if has_labels and label_num != 0 else None,
@@ -1642,6 +1659,8 @@ def build_slide_document(
                 label_to_images[label_num].append(info)
                 image_counter += 1
             except Exception as e:
+                if debug_log is not None:
+                    debug_log.append(f"  ERROR extracting label={label_num}, img_id={img_id}: {e}")
                 err_info = {'label': label_num if has_labels else None, 'error': str(e)}
                 label_to_images[label_num].append(err_info)
                 all_images.append((label_num, img_shape, None, err_info))
@@ -1673,16 +1692,26 @@ def build_slide_document(
                 fn = vi.get('file_name', 'ERR')
                 debug_log.append(f"      -> {fn}")
     # Second pass: build text lines
+    # Collect all footnote texts to skip them
+    all_footnote_texts = set()
+    for group in groups.values():
+        all_footnote_texts.update(group.get('footnotes', {}).values())
+    if debug_log is not None:
+        debug_log.append(f"  all_footnote_texts to skip: {list(all_footnote_texts)}")
+
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
 
-        # Skip footnote text boxes (already attached to images)
-        if id(shape) in footnote_shape_ids:
-            continue
-
         text = shape.text_frame.text.strip()
         if not text:
+            continue
+
+        # Skip footnote text boxes (already attached to images)
+        # Check if this text matches any footnote text
+        if text in all_footnote_texts:
+            if debug_log is not None:
+                debug_log.append(f"  [SKIP TEXT] matches footnote: {repr(text[:50])}")
             continue
 
         paragraphs = text.split('\n')
