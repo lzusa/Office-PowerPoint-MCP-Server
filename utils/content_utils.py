@@ -1288,18 +1288,12 @@ def _rect_distance(s1, s2) -> float:
     return (dx ** 2 + dy ** 2) ** 0.5
 
 
-def _is_digit_label(shape, debug_log=None) -> str | None:
+def _is_digit_label(shape) -> str | None:
     """Check if shape text is a pure digit (1, 2, ...). Returns digit string or None."""
     if not shape.has_text_frame:
-        if debug_log is not None:
-            debug_log.append(f"  [_is_digit_label] SKIP (no text_frame) | shape_type={shape.shape_type}")
         return None
     text = shape.text_frame.text.strip()
-    result = text if text.isdigit() else None
-    if debug_log is not None:
-        shape_desc = f"left={shape.left}, top={shape.top}, w={shape.width}, h={shape.height}"
-        debug_log.append(f"  [_is_digit_label] text={repr(text)} | isdigit={text.isdigit()} | result={repr(result)} | {shape_desc}")
-    return result
+    return text if text.isdigit() else None
 
 
 def _is_potential_footnote(text_shape, img_shape) -> bool:
@@ -1328,7 +1322,7 @@ def _is_potential_footnote(text_shape, img_shape) -> bool:
     return True
 
 
-def _group_images_by_labels(slide, all_shapes=None, debug_log=None):
+def _group_images_by_labels(slide, all_shapes=None):
     """
     Group images by their nearest label number.
 
@@ -1346,36 +1340,20 @@ def _group_images_by_labels(slide, all_shapes=None, debug_log=None):
     if all_shapes is None:
         all_shapes = list(slide.shapes)
 
-    if debug_log is not None:
-        debug_log.append("")
-        debug_log.append("="*80)
-        debug_log.append("_group_images_by_labels — Shape Classification")
-        debug_log.append("="*80)
     labels = []
     images = []
     text_shapes = []
 
     for shape in all_shapes:
-        d = _is_digit_label(shape, debug_log=debug_log)
+        d = _is_digit_label(shape)
         if d is not None:
             labels.append((int(d), shape))
-            if debug_log is not None:
-                debug_log.append(f"  [LABEL]  digit={d} | pos=({shape.left},{shape.top}) size=({shape.width}x{shape.height})")
         elif hasattr(shape, 'image') and shape.image is not None:
             images.append(shape)
-            if debug_log is not None:
-                debug_log.append(f"  [IMAGE]  pos=({shape.left},{shape.top}) size=({shape.width}x{shape.height}) ct={shape.image.content_type if shape.image else 'N/A'}")
         elif shape.has_text_frame and shape.text_frame.text.strip():
             text_shapes.append(shape)
-            if debug_log is not None:
-                t = shape.text_frame.text.strip()[:60]
-                debug_log.append(f"  [TEXT]   text={repr(t)} | pos=({shape.left},{shape.top})")
-    if debug_log is not None:
-        debug_log.append(f"")
-        debug_log.append(f"  Summary: labels={len(labels)} | images={len(images)} | text_shapes={len(text_shapes)}")
+
     if not images:
-        if debug_log is not None:
-            debug_log.append("  [WARN] No images found, returning empty dict.")
         return {}
 
     labels.sort(key=lambda x: x[0])
@@ -1386,47 +1364,22 @@ def _group_images_by_labels(slide, all_shapes=None, debug_log=None):
 
     # ── Phase 1: assign each label its single nearest image ──
     if has_labels:
-        if debug_log is not None:
-            debug_log.append("")
-            debug_log.append("="*80)
-            debug_log.append(f"Phase 1: Labeled Assignment (labels={[l[0] for l in labels]})")
-            debug_log.append("="*80)
         used_images = set()
-
-        # Compute threshold from all images
         threshold = max(img.width for img in images) * 1.5
-        if debug_log is not None:
-            debug_log.append(f"  Distance threshold = max_img_width * 1.5 = {max(img.width for img in images)} * 1.5 = {threshold}")
+
         for label_num, lbl in labels:
             groups[label_num] = {'images': [], 'footnotes': {}}
 
-            if debug_log is not None:
-                debug_log.append(f"")
-                debug_log.append(f"  --- Label {label_num} (pos={lbl.left},{lbl.top}) ---")
-            # Build candidate list from unassigned images
             candidates = [
                 (img, _rect_distance(lbl, img))
                 for img in images
                 if id(img) not in used_images
             ]
-            if debug_log is not None:
-                if candidates:
-                    for i, (img, dist) in enumerate(candidates):
-                        status = f"{dist:.0f} -> {'WITHIN' if dist <= threshold else 'OVER'} threshold"
-                        debug_log.append(f"    Candidate {i}: img pos=({img.left},{img.top}) dist={dist:.0f} {status}")
-                else:
-                    debug_log.append(f"    No candidates (all images already used)")
             if not candidates:
-                if debug_log is not None:
-                    debug_log.append(f"    -> SKIP label {label_num}: no unassigned images left")
-                continue                      # ← was `break` (fatal)
+                continue
 
             candidates.sort(key=lambda x: x[1])
-
-            # Claim the closest image
-            closest_img, closest_dist = candidates[0]
-            if debug_log is not None:
-                debug_log.append(f"    -> CLAIM closest: dist={closest_dist:.0f} img pos=({closest_img.left},{closest_img.top}) {'WITHIN threshold' if closest_dist <= threshold else '** OVER threshold **'}")
+            closest_img, _ = candidates[0]
             groups[label_num]['images'].append(closest_img)
             used_images.add(id(closest_img))
             image_labels[id(closest_img)] = label_num
@@ -1434,14 +1387,6 @@ def _group_images_by_labels(slide, all_shapes=None, debug_log=None):
     # ── Phase 2: unlabeled image inheritance ──
     unassigned = [img for img in images if id(img) not in image_labels]
 
-    if debug_log is not None:
-        debug_log.append("")
-        debug_log.append("="*80)
-        debug_log.append("Phase 2: Unlabeled Image Inheritance")
-        debug_log.append("="*80)
-        debug_log.append(f"  Unassigned images: {len(unassigned)}")
-        for i, img in enumerate(unassigned):
-            debug_log.append(f"    Unassigned #{i}: pos=({img.left},{img.top}) size=({img.width}x{img.height})")
     if unassigned:
         if has_labels:
             # For each unassigned image, find the closest already-grouped
@@ -1463,28 +1408,15 @@ def _group_images_by_labels(slide, all_shapes=None, debug_log=None):
                 if best_label is not None:
                     groups[best_label]['images'].append(img)
                     image_labels[id(img)] = best_label
-                    if debug_log is not None:
-                        debug_log.append(f"  img pos=({img.left},{img.top}) -> INHERIT label {best_label} (dist={best_dist:.0f})")
                 else:
-                    # Should not happen if groups is non-empty, but fallback
                     first_label = next(iter(groups))
                     groups[first_label]['images'].append(img)
                     image_labels[id(img)] = first_label
-                    if debug_log is not None:
-                        debug_log.append(f"  img pos=({img.left},{img.top}) -> FALLBACK to first_label {first_label}")
         else:
-            # No labels at all: all images go into one unlabeled group
             groups[0] = {'images': list(images), 'footnotes': {}}
             for img in images:
                 image_labels[id(img)] = 0
-            if debug_log is not None:
-                debug_log.append(f"  No labels detected. All {len(images)} images grouped under key=0.")
-    # ── Phase 3: footnote detection (unchanged) ──
-    if debug_log is not None:
-        debug_log.append("")
-        debug_log.append("="*80)
-        debug_log.append("Phase 3: Footnote Detection")
-        debug_log.append("="*80)
+    # ── Phase 3: footnote detection ──
     for label_num, group in groups.items():
         for img in group['images']:
             best_fn = None
@@ -1497,23 +1429,7 @@ def _group_images_by_labels(slide, all_shapes=None, debug_log=None):
                         best_fn = ts
             if best_fn is not None:
                 group['footnotes'][id(img)] = best_fn.text_frame.text.strip()
-                if debug_log is not None:
-                    fn_t = best_fn.text_frame.text.strip()[:50]
-                    debug_log.append(f"  Label {label_num} img pos=({img.left},{img.top}) -> footnote: {repr(fn_t)}")
-    # ── Final summary ──
-    if debug_log is not None:
-        debug_log.append("")
-        debug_log.append("="*80)
-        debug_log.append("Final Groups Summary")
-        debug_log.append("="*80)
-        for label_num in sorted(groups.keys()):
-            group = groups[label_num]
-            img_count = len(group['images'])
-            fn_count = len(group['footnotes'])
-            debug_log.append(f"  Group label={label_num}: {img_count} image(s), {fn_count} footnote(s)")
-            for i, img in enumerate(group['images']):
-                debug_log.append(f"    img#{i} pos=({img.left},{img.top}) size=({img.width}x{img.height})")
-        debug_log.append("="*80)
+
     return groups
 
 
@@ -1574,8 +1490,6 @@ def build_slide_document(
     """
     import os, re
 
-    _debug = os.environ.get('DEBUG_GROUP_IMAGES')
-
     os.makedirs(output_dir, exist_ok=True)
 
     ext_map = {
@@ -1585,33 +1499,10 @@ def build_slide_document(
     }
 
     # Step 1: group images by labels
-    debug_log: list[str] | None = []
-    groups = _group_images_by_labels(slide, debug_log=debug_log)
+    groups = _group_images_by_labels(slide)
 
     # Check if there are any real labels (not just label=0 for unlabeled)
     has_labels = any(k != 0 for k in groups.keys())
-
-    # DEBUG: Log groups structure
-    if debug_log is not None:
-        debug_log.append("")
-        debug_log.append("="*80)
-        debug_log.append("build_slide_document — Image Extraction")
-        debug_log.append("="*80)
-        debug_log.append(f"  has_labels={has_labels}")
-        debug_log.append(f"  groups keys: {list(groups.keys())}")
-        for lbl, grp in groups.items():
-            debug_log.append(f"    Group {lbl}: {len(grp['images'])} images, {len(grp['footnotes'])} footnotes")
-            for img in grp['images']:
-                debug_log.append(f"      img id={id(img)} pos=({img.left},{img.top})")
-            for img_id, fn_txt in grp['footnotes'].items():
-                debug_log.append(f"      footnote img_id={img_id}: {repr(fn_txt[:30] if fn_txt else None)}")
-
-    # Collect footnote shape ids to skip them in text collection
-    # NOTE: group['footnotes'] stores {img_id: footnote_text_string}, not shape objects!
-    footnote_shape_ids = set()  # This is actually not used for shape skipping since we don't have shape refs
-    # The footnotes dict keys are img_ids (int), values are footnote text strings
-    # We don't skip text shapes here because we don't track which text shape is a footnote
-    # Instead, we rely on the text content matching to skip footnotes in text extraction
 
     # Step 2: extract images
     all_images = []  # list of (label_num, img_shape, file_path, info)
@@ -1639,9 +1530,6 @@ def build_slide_document(
 
                 # FIX: group['footnotes'] stores {img_id: footnote_text_string}, not shape objects!
                 footnote_text = group['footnotes'].get(img_id)
-                if debug_log is not None:
-                    debug_log.append(f"  Extracting label={label_num}, img_id={img_id}, file={file_name}")
-                    debug_log.append(f"    footnote_text from group['footnotes'].get({img_id}): {repr(footnote_text)}")
 
                 info = {
                     'label': label_num if has_labels and label_num != 0 else None,
@@ -1659,8 +1547,6 @@ def build_slide_document(
                 label_to_images[label_num].append(info)
                 image_counter += 1
             except Exception as e:
-                if debug_log is not None:
-                    debug_log.append(f"  ERROR extracting label={label_num}, img_id={img_id}: {e}")
                 err_info = {'label': label_num if has_labels else None, 'error': str(e)}
                 label_to_images[label_num].append(err_info)
                 all_images.append((label_num, img_shape, None, err_info))
@@ -1679,25 +1565,11 @@ def build_slide_document(
             has_markers = True
             break
 
-    if debug_log is not None:
-        debug_log.append("")
-        debug_log.append("="*80)
-        debug_log.append("build_slide_document — Marker Replacement")
-        debug_log.append("="*80)
-        debug_log.append(f"  has_markers={has_markers}")
-        debug_log.append(f"  label_to_images keys: {sorted(label_to_images.keys())}")
-        for k, v in sorted(label_to_images.items()):
-            debug_log.append(f"    label_to_images[{k}]: {len(v)} image(s)")
-            for vi in v:
-                fn = vi.get('file_name', 'ERR')
-                debug_log.append(f"      -> {fn}")
     # Second pass: build text lines
     # Collect all footnote texts to skip them
     all_footnote_texts = set()
     for group in groups.values():
         all_footnote_texts.update(group.get('footnotes', {}).values())
-    if debug_log is not None:
-        debug_log.append(f"  all_footnote_texts to skip: {list(all_footnote_texts)}")
 
     for shape in slide.shapes:
         if not shape.has_text_frame:
@@ -1710,8 +1582,6 @@ def build_slide_document(
         # Skip footnote text boxes (already attached to images)
         # Check if this text matches any footnote text
         if text in all_footnote_texts:
-            if debug_log is not None:
-                debug_log.append(f"  [SKIP TEXT] matches footnote: {repr(text[:50])}")
             continue
 
         paragraphs = text.split('\n')
@@ -1725,11 +1595,6 @@ def build_slide_document(
                 def _replace_marker(m, _label_to_images=label_to_images):
                     num = int(m.group(1))
                     imgs = _label_to_images.get(num)
-                    if debug_log is not None:
-                        if imgs:
-                            debug_log.append(f"  [MARKER] ({num}) -> FOUND {len(imgs)} image(s)")
-                        else:
-                            debug_log.append(f"  [MARKER] ({num}) -> NOT FOUND (label_to_images has no key {num})")
                     if imgs:
                         refs = []
                         for img_info in imgs:
@@ -1779,6 +1644,5 @@ def build_slide_document(
         'image_count': len([info for _, _, _, info in all_images if 'error' not in info]),
         'groups': groups_summary,
         'has_labels': has_labels,
-        'debug_log': '\n'.join(debug_log) if debug_log else None,
     }
 
