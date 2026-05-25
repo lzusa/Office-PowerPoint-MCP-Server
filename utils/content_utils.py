@@ -1416,19 +1416,22 @@ def _group_images_by_labels(slide, all_shapes=None):
             groups[0] = {'images': list(images), 'footnotes': {}}
             for img in images:
                 image_labels[id(img)] = 0
-    # ── Phase 3: footnote detection ──
+    # ── Phase 3: footnote detection (supports multiple footnotes per image) ──
     for label_num, group in groups.items():
         for img in group['images']:
-            best_fn = None
-            best_dist = float('inf')
+            # Collect all potential footnotes for this image, sorted by distance
+            footnote_candidates = []
             for ts in text_shapes:
                 if _is_potential_footnote(ts, img):
                     d = _rect_distance(ts, img)
-                    if d < best_dist:
-                        best_dist = d
-                        best_fn = ts
-            if best_fn is not None:
-                group['footnotes'][id(img)] = best_fn.text_frame.text.strip()
+                    footnote_candidates.append((d, ts))
+            
+            if footnote_candidates:
+                # Sort by distance and join multiple footnotes
+                footnote_candidates.sort(key=lambda x: x[0])
+                footnote_texts = [ts.text_frame.text.strip() for _, ts in footnote_candidates]
+                # Join with semicolon if multiple footnotes
+                group['footnotes'][id(img)] = '; '.join(footnote_texts)
 
     return groups
 
@@ -1566,10 +1569,14 @@ def build_slide_document(
             break
 
     # Second pass: build text lines
-    # Collect all footnote texts to skip them
+    # Collect all individual footnote texts to skip them
     all_footnote_texts = set()
     for group in groups.values():
-        all_footnote_texts.update(group.get('footnotes', {}).values())
+        for combined_footnote in group.get('footnotes', {}).values():
+            # Split combined footnotes and add each individually
+            if combined_footnote:
+                for single_footnote in combined_footnote.split('; '):
+                    all_footnote_texts.add(single_footnote.strip())
 
     for shape in slide.shapes:
         if not shape.has_text_frame:
@@ -1580,7 +1587,7 @@ def build_slide_document(
             continue
 
         # Skip footnote text boxes (already attached to images)
-        # Check if this text matches any footnote text
+        # Check if this text matches any individual footnote text
         if text in all_footnote_texts:
             continue
 
