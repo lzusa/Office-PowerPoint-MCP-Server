@@ -1416,22 +1416,43 @@ def _group_images_by_labels(slide, all_shapes=None):
             groups[0] = {'images': list(images), 'footnotes': {}}
             for img in images:
                 image_labels[id(img)] = 0
-    # ── Phase 3: footnote detection (supports multiple footnotes per image) ──
-    for label_num, group in groups.items():
-        for img in group['images']:
-            # Collect all potential footnotes for this image, sorted by distance
-            footnote_candidates = []
-            for ts in text_shapes:
+    # ── Phase 3: footnote detection (each footnote assigned to exactly one closest image) ──
+    # Build a list of all images across all groups for global matching
+    all_images = []
+    for group in groups.values():
+        all_images.extend(group['images'])
+    
+    # Track which footnotes have been assigned
+    assigned_footnotes = set()
+    
+    for ts in text_shapes:
+        ts_text = ts.text_frame.text.strip()
+        if not ts_text:
+            continue
+            
+        # Find the closest image for this footnote
+        best_img = None
+        best_dist = float('inf')
+        best_group = None
+        
+        for label_num, group in groups.items():
+            for img in group['images']:
                 if _is_potential_footnote(ts, img):
                     d = _rect_distance(ts, img)
-                    footnote_candidates.append((d, ts))
-            
-            if footnote_candidates:
-                # Sort by distance and join multiple footnotes
-                footnote_candidates.sort(key=lambda x: x[0])
-                footnote_texts = [ts.text_frame.text.strip() for _, ts in footnote_candidates]
-                # Join with semicolon if multiple footnotes
-                group['footnotes'][id(img)] = '; '.join(footnote_texts)
+                    if d < best_dist:
+                        best_dist = d
+                        best_img = img
+                        best_group = group
+        
+        # Assign footnote to its closest image (only if not already assigned)
+        if best_img is not None and ts_text not in assigned_footnotes:
+            img_id = id(best_img)
+            existing = best_group['footnotes'].get(img_id, '')
+            if existing:
+                best_group['footnotes'][img_id] = existing + '; ' + ts_text
+            else:
+                best_group['footnotes'][img_id] = ts_text
+            assigned_footnotes.add(ts_text)
 
     return groups
 
