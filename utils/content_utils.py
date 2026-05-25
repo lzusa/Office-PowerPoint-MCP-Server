@@ -1289,12 +1289,19 @@ def _rect_distance(s1, s2) -> float:
 
 def _is_digit_label(shape) -> str | None:
     """Check if shape text is a pure digit (1, 2, ...). Returns digit string or None."""
+    import os
+    _debug = os.environ.get('DEBUG_GROUP_IMAGES')
+
     if not shape.has_text_frame:
+        if _debug:
+            print(f"  [_is_digit_label] SKIP (no text_frame) | shape_type={shape.shape_type}")
         return None
     text = shape.text_frame.text.strip()
-    if text.isdigit():
-        return text
-    return None
+    result = text if text.isdigit() else None
+    if _debug:
+        shape_desc = f"left={shape.left}, top={shape.top}, w={shape.width}, h={shape.height}"
+        print(f"  [_is_digit_label] text={repr(text)} | isdigit={text.isdigit()} | result={repr(result)} | {shape_desc}")
+    return result
 
 
 def _is_potential_footnote(text_shape, img_shape) -> bool:
@@ -1338,8 +1345,16 @@ def _group_images_by_labels(slide, all_shapes=None):
 
     Returns dict: {label_num: {'images': [...], 'footnotes': {img_id: footnote_text}}}
     """
+    import os
+    _debug = os.environ.get('DEBUG_GROUP_IMAGES')
+
     if all_shapes is None:
         all_shapes = list(slide.shapes)
+
+    if _debug:
+        print("\n" + "="*80)
+        print("[DEBUG] _group_images_by_labels — Shape Classification")
+        print("="*80)
 
     labels = []
     images = []
@@ -1349,12 +1364,24 @@ def _group_images_by_labels(slide, all_shapes=None):
         d = _is_digit_label(shape)
         if d is not None:
             labels.append((int(d), shape))
+            if _debug:
+                print(f"  [LABEL]  digit={d} | pos=({shape.left},{shape.top}) size=({shape.width}x{shape.height})")
         elif hasattr(shape, 'image') and shape.image is not None:
             images.append(shape)
+            if _debug:
+                print(f"  [IMAGE]  pos=({shape.left},{shape.top}) size=({shape.width}x{shape.height}) ct={shape.image.content_type if shape.image else 'N/A'}")
         elif shape.has_text_frame and shape.text_frame.text.strip():
             text_shapes.append(shape)
+            if _debug:
+                t = shape.text_frame.text.strip()[:60]
+                print(f"  [TEXT]   text={repr(t)} | pos=({shape.left},{shape.top})")
+
+    if _debug:
+        print(f"\n  Summary: labels={len(labels)} | images={len(images)} | text_shapes={len(text_shapes)}")
 
     if not images:
+        if _debug:
+            print("  [WARN] No images found, returning empty dict.")
         return {}
 
     labels.sort(key=lambda x: x[0])
@@ -1365,10 +1392,23 @@ def _group_images_by_labels(slide, all_shapes=None):
 
     # ── Phase 1: assign each label its single nearest image ──
     if has_labels:
+        if _debug:
+            print(f"\n{'='*80}")
+            print(f"[DEBUG] Phase 1: Labeled Assignment (labels={[l[0] for l in labels]})")
+            print(f"{'='*80}")
+
         used_images = set()
+
+        # Compute threshold from all images
+        threshold = max(img.width for img in images) * 1.5
+        if _debug:
+            print(f"  Distance threshold = max_img_width * 1.5 = {max(img.width for img in images)} * 1.5 = {threshold}")
 
         for label_num, lbl in labels:
             groups[label_num] = {'images': [], 'footnotes': {}}
+
+            if _debug:
+                print(f"\n  --- Label {label_num} (pos={lbl.left},{lbl.top}) ---")
 
             # Build candidate list from unassigned images
             candidates = [
@@ -1376,19 +1416,39 @@ def _group_images_by_labels(slide, all_shapes=None):
                 for img in images
                 if id(img) not in used_images
             ]
+            if _debug:
+                if candidates:
+                    for i, (img, dist) in enumerate(candidates):
+                        status = f"{dist:.0f} -> {'WITHIN' if dist <= threshold else 'OVER'} threshold"
+                        print(f"    Candidate {i}: img pos=({img.left},{img.top}) dist={dist:.0f} {status}")
+                else:
+                    print(f"    No candidates (all images already used)")
+
             if not candidates:
+                if _debug:
+                    print(f"    -> SKIP label {label_num}: no unassigned images left")
                 continue                      # ← was `break` (fatal)
 
             candidates.sort(key=lambda x: x[1])
 
             # Claim the closest image
             closest_img, closest_dist = candidates[0]
+            if _debug:
+                print(f"    -> CLAIM closest: dist={closest_dist:.0f} img pos=({closest_img.left},{closest_img.top}) {'WITHIN threshold' if closest_dist <= threshold else '** OVER threshold **'}")
             groups[label_num]['images'].append(closest_img)
             used_images.add(id(closest_img))
             image_labels[id(closest_img)] = label_num
 
     # ── Phase 2: unlabeled image inheritance ──
     unassigned = [img for img in images if id(img) not in image_labels]
+
+    if _debug:
+        print(f"\n{'='*80}")
+        print(f"[DEBUG] Phase 2: Unlabeled Image Inheritance")
+        print(f"{'='*80}")
+        print(f"  Unassigned images: {len(unassigned)}")
+        for i, img in enumerate(unassigned):
+            print(f"    Unassigned #{i}: pos=({img.left},{img.top}) size=({img.width}x{img.height})")
 
     if unassigned:
         if has_labels:
@@ -1411,18 +1471,29 @@ def _group_images_by_labels(slide, all_shapes=None):
                 if best_label is not None:
                     groups[best_label]['images'].append(img)
                     image_labels[id(img)] = best_label
+                    if _debug:
+                        print(f"  img pos=({img.left},{img.top}) -> INHERIT label {best_label} (dist={best_dist:.0f})")
                 else:
                     # Should not happen if groups is non-empty, but fallback
                     first_label = next(iter(groups))
                     groups[first_label]['images'].append(img)
                     image_labels[id(img)] = first_label
+                    if _debug:
+                        print(f"  img pos=({img.left},{img.top}) -> FALLBACK to first_label {first_label}")
         else:
             # No labels at all: all images go into one unlabeled group
             groups[0] = {'images': list(images), 'footnotes': {}}
             for img in images:
                 image_labels[id(img)] = 0
+            if _debug:
+                print(f"  No labels detected. All {len(images)} images grouped under key=0.")
 
     # ── Phase 3: footnote detection (unchanged) ──
+    if _debug:
+        print(f"\n{'='*80}")
+        print(f"[DEBUG] Phase 3: Footnote Detection")
+        print(f"{'='*80}")
+
     for label_num, group in groups.items():
         for img in group['images']:
             best_fn = None
@@ -1435,6 +1506,23 @@ def _group_images_by_labels(slide, all_shapes=None):
                         best_fn = ts
             if best_fn is not None:
                 group['footnotes'][id(img)] = best_fn.text_frame.text.strip()
+                if _debug:
+                    fn_t = best_fn.text_frame.text.strip()[:50]
+                    print(f"  Label {label_num} img pos=({img.left},{img.top}) -> footnote: {repr(fn_t)}")
+
+    # ── Final summary ──
+    if _debug:
+        print(f"\n{'='*80}")
+        print(f"[DEBUG] Final Groups Summary")
+        print(f"{'='*80}")
+        for label_num in sorted(groups.keys()):
+            group = groups[label_num]
+            img_count = len(group['images'])
+            fn_count = len(group['footnotes'])
+            print(f"  Group label={label_num}: {img_count} image(s), {fn_count} footnote(s)")
+            for i, img in enumerate(group['images']):
+                print(f"    img#{i} pos=({img.left},{img.top}) size=({img.width}x{img.height})")
+        print(f"{'='*80}\n")
 
     return groups
 
@@ -1495,6 +1583,8 @@ def build_slide_document(
         }
     """
     import os, re
+
+    _debug = os.environ.get('DEBUG_GROUP_IMAGES')
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1579,6 +1669,18 @@ def build_slide_document(
             has_markers = True
             break
 
+    if _debug:
+        print(f"\n{'='*80}")
+        print(f"[DEBUG] build_slide_document — Marker Replacement")
+        print(f"{'='*80}")
+        print(f"  has_markers={has_markers}")
+        print(f"  label_to_images keys: {sorted(label_to_images.keys())}")
+        for k, v in sorted(label_to_images.items()):
+            print(f"    label_to_images[{k}]: {len(v)} image(s)")
+            for vi in v:
+                fn = vi.get('file_name', 'ERR')
+                print(f"      -> {fn}")
+
     # Second pass: build text lines
     for shape in slide.shapes:
         if not shape.has_text_frame:
@@ -1603,6 +1705,11 @@ def build_slide_document(
                 def _replace_marker(m, _label_to_images=label_to_images):
                     num = int(m.group(1))
                     imgs = _label_to_images.get(num)
+                    if _debug:
+                        if imgs:
+                            print(f"  [MARKER] ({num}) -> FOUND {len(imgs)} image(s)")
+                        else:
+                            print(f"  [MARKER] ({num}) -> NOT FOUND (label_to_images has no key {num})")
                     if imgs:
                         refs = []
                         for img_info in imgs:
