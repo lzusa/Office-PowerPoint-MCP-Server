@@ -1642,14 +1642,14 @@ def build_slide_document(
 
     full_text = '\n'.join(lines)
 
-    # If no markers, append all images at the end
-    if not has_markers and all_images:
+    # If no labels on the slide, append all images at the end
+    # Only append when there are no numeric labels (not when markers are missing in text)
+    if not has_labels and all_images:
         full_text += '\n\n--- 图片 ---\n'
         for label_num, img_shape, file_path, info in all_images:
             if 'error' in info:
                 continue
-            label_str = f"(标号{info['label']})" if info.get('label') is not None else "(无标号)"
-            line = f"[IMAGE: file={info['file_name']}, size={info['width_inches']}x{info['height_inches']}in, type={info['content_type']}] {label_str}"
+            line = f"[IMAGE: file={info['file_name']}, size={info['width_inches']}x{info['height_inches']}in, type={info['content_type']}]"
             if info.get('footnote'):
                 line += f" | 脚注: {info['footnote']}"
             full_text += line + '\n'
